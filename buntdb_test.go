@@ -1,5 +1,6 @@
 package buntdb
 
+/*
 import (
 	"bytes"
 	"errors"
@@ -1930,14 +1931,6 @@ func Benchmark_Descend_10000(t *testing.B) {
 	benchScan(t, false, 10000)
 }
 
-/*
-func Benchmark_Spatial_2D(t *testing.B) {
-	N := 100000
-	db, _, _ := benchOpenFillData(t, N, true, true, false, true, 100)
-	defer benchClose(t, false, db)
-
-}
-*/
 
 func TestCoverConfigClosed(t *testing.T) {
 	db := testOpen(t)
@@ -2023,3 +2016,4 @@ func TestJSONIndex(t *testing.T) {
 		t.Fatalf("expected %v, got %v", expect, strings.Join(keys, ","))
 	}
 }
+*/
