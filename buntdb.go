@@ -18,6 +18,10 @@ import (
 	"github.com/tidwall/match"
 )
 
+type DBItem interface {
+	Less(than DBItem) bool
+}
+
 var (
 	// ErrTxNotWritable is returned when performing a write operation on a
 	// read-only transaction.
@@ -108,12 +112,12 @@ func (db *DB) Close() error {
 // index represents a b-tree or r-tree index and also acts as the
 // b-tree/r-tree context for itself.
 type index struct {
-	btr     *btree.BTree               // contains the items
-	name    string                     // name of the index
-	pattern string                     // a required key pattern
-	less    func(a, b btree.Item) bool // less comparison function
-	db      *DB                        // the origin database
-	opts    IndexOptions               // index options
+	btr     *btree.BTree                            // contains the items
+	name    string                                  // name of the index
+	pattern string                                  // a required key pattern
+	less    func(a string, b DBItem, n string) bool // less comparison function
+	db      *DB                                     // the origin database
+	opts    IndexOptions                            // index options
 }
 
 // match matches the pattern to the key
@@ -271,7 +275,6 @@ func (db *DB) deleteFromDatabase(item *dbItem) *dbItem {
 // backgroundManager runs continuously in the background and performs various
 // operations such as removing expired items and syncing to disk.
 func (db *DB) backgroundManager() {
-	flushes := 0
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for range t.C {
@@ -556,7 +559,7 @@ type dbItemOpts struct {
 }
 type dbItem struct {
 	key  string // the binary key
-	val  btree.Item
+	val  DBItem
 	opts *dbItemOpts // optional meta information
 }
 
@@ -649,7 +652,7 @@ type SetOptions struct {
 // doing ad-hoc compares inside a transaction.
 // Returns ErrNotFound if the index is not found or there is no less
 // function bound to the index
-func (tx *Tx) GetLess(index string) (func(a, b btree.Item) bool, error) {
+func (tx *Tx) GetLess(index string) (func(a string, b DBItem) bool, error) {
 	if tx.db == nil {
 		return nil, ErrTxClosed
 	}
@@ -671,7 +674,7 @@ func (tx *Tx) GetLess(index string) (func(a, b btree.Item) bool, error) {
 //
 // Only a writable transaction can be used with this operation.
 // This operation is not allowed during iterations such as Ascend* & Descend*.
-func (tx *Tx) Set(key string, value btree.Item, opts *SetOptions) (previousValue btree.Item,
+func (tx *Tx) Set(key string, value DBItem, opts *SetOptions) (previousValue DBItem,
 	replaced bool, err error) {
 	if tx.db == nil {
 		return nil, false, ErrTxClosed
@@ -717,7 +720,7 @@ func (tx *Tx) Set(key string, value btree.Item, opts *SetOptions) (previousValue
 
 // Get returns a value for a key. If the item does not exist or if the item
 // has expired then ErrNotFound is returned.
-func (tx *Tx) Get(key string) (val btree.Item, err error) {
+func (tx *Tx) Get(key string) (val DBItem, err error) {
 	if tx.db == nil {
 		return nil, ErrTxClosed
 	}
@@ -735,7 +738,7 @@ func (tx *Tx) Get(key string) (val btree.Item, err error) {
 //
 // Only a writable transaction can be used for this operation.
 // This operation is not allowed during iterations such as Ascend* & Descend*.
-func (tx *Tx) Delete(key string) (val btree.Item, err error) {
+func (tx *Tx) Delete(key string) (val DBItem, err error) {
 	if tx.db == nil {
 		return nil, ErrTxClosed
 	} else if !tx.writable {
@@ -794,7 +797,7 @@ func (tx *Tx) TTL(key string) (time.Duration, error) {
 // descending order, these will be lessThan, greaterThan.
 // An error will be returned if the tx is closed or the index is not found.
 func (tx *Tx) scan(desc, gt, lt bool, index, start, stop string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -874,7 +877,7 @@ func Match(key, pattern string) bool {
 
 // AscendKeys allows for iterating through keys based on the specified pattern.
 func (tx *Tx) AscendKeys(pattern string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	if pattern == "" {
 		return nil
 	}
@@ -882,7 +885,7 @@ func (tx *Tx) AscendKeys(pattern string,
 		if pattern == "*" {
 			return tx.Ascend("", iterator)
 		}
-		return tx.Ascend("", func(key string, value btree.Item) bool {
+		return tx.Ascend("", func(key string, value DBItem) bool {
 			if match.Match(key, pattern) {
 				if !iterator(key, value) {
 					return false
@@ -892,7 +895,7 @@ func (tx *Tx) AscendKeys(pattern string,
 		})
 	}
 	min, max := match.Allowable(pattern)
-	return tx.AscendGreaterOrEqual("", min, func(key string, value btree.Item) bool {
+	return tx.AscendGreaterOrEqual("", min, func(key string, value DBItem) bool {
 		if key > max {
 			return false
 		}
@@ -907,7 +910,7 @@ func (tx *Tx) AscendKeys(pattern string,
 
 // DescendKeys allows for iterating through keys based on the specified pattern.
 func (tx *Tx) DescendKeys(pattern string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	if pattern == "" {
 		return nil
 	}
@@ -915,7 +918,7 @@ func (tx *Tx) DescendKeys(pattern string,
 		if pattern == "*" {
 			return tx.Descend("", iterator)
 		}
-		return tx.Descend("", func(key string, value btree.Item) bool {
+		return tx.Descend("", func(key string, value DBItem) bool {
 			if match.Match(key, pattern) {
 				if !iterator(key, value) {
 					return false
@@ -925,7 +928,7 @@ func (tx *Tx) DescendKeys(pattern string,
 		})
 	}
 	min, max := match.Allowable(pattern)
-	return tx.DescendLessOrEqual("", max, func(key string, value btree.Item) bool {
+	return tx.DescendLessOrEqual("", max, func(key string, value DBItem) bool {
 		if key < min {
 			return false
 		}
@@ -945,7 +948,7 @@ func (tx *Tx) DescendKeys(pattern string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) Ascend(index string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(false, false, false, index, "", "", iterator)
 }
 
@@ -956,7 +959,7 @@ func (tx *Tx) Ascend(index string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) AscendGreaterOrEqual(index, pivot string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(false, true, false, index, pivot, "", iterator)
 }
 
@@ -967,7 +970,7 @@ func (tx *Tx) AscendGreaterOrEqual(index, pivot string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) AscendLessThan(index, pivot string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(false, false, true, index, pivot, "", iterator)
 }
 
@@ -978,7 +981,7 @@ func (tx *Tx) AscendLessThan(index, pivot string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) AscendRange(index, greaterOrEqual, lessThan string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(
 		false, true, true, index, greaterOrEqual, lessThan, iterator,
 	)
@@ -991,7 +994,7 @@ func (tx *Tx) AscendRange(index, greaterOrEqual, lessThan string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) Descend(index string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(true, false, false, index, "", "", iterator)
 }
 
@@ -1002,7 +1005,7 @@ func (tx *Tx) Descend(index string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) DescendGreaterThan(index, pivot string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(true, true, false, index, pivot, "", iterator)
 }
 
@@ -1013,7 +1016,7 @@ func (tx *Tx) DescendGreaterThan(index, pivot string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) DescendLessOrEqual(index, pivot string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(true, false, true, index, pivot, "", iterator)
 }
 
@@ -1024,7 +1027,7 @@ func (tx *Tx) DescendLessOrEqual(index, pivot string,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) DescendRange(index, lessOrEqual, greaterThan string,
-	iterator func(key string, value btree.Item) bool) error {
+	iterator func(key string, value DBItem) bool) error {
 	return tx.scan(
 		true, true, true, index, lessOrEqual, greaterThan, iterator,
 	)
@@ -1062,7 +1065,7 @@ type IndexOptions struct {
 // There are some default less function that can be used such as
 // IndexString, IndexBinary, etc.
 func (tx *Tx) CreateIndex(name, pattern string,
-	less ...func(a, b btree.Item) bool) error {
+	less ...func(a string, b DBItem) bool) error {
 	return tx.createIndex(name, pattern, less, nil)
 }
 
@@ -1070,13 +1073,13 @@ func (tx *Tx) CreateIndex(name, pattern string,
 // for additional options.
 func (tx *Tx) CreateIndexOptions(name, pattern string,
 	opts *IndexOptions,
-	less ...func(a, b btree.Item) bool) error {
+	less ...func(a string, b DBItem) bool) error {
 	return tx.createIndex(name, pattern, less, opts)
 }
 
 // createIndex is called by CreateIndex() and CreateSpatialIndex()
 func (tx *Tx) createIndex(name string, pattern string,
-	lessers []func(a, b btree.Item) bool,
+	lessers []func(a string, b DBItem) bool,
 	opts *IndexOptions,
 ) error {
 	if tx.db == nil {
@@ -1097,12 +1100,12 @@ func (tx *Tx) createIndex(name string, pattern string,
 		return ErrIndexExists
 	}
 	// genreate a less function
-	var less func(a, b btree.Item) bool
+	var less func(a string, b DBItem) bool
 	switch len(lessers) {
 	default:
 		// multiple less functions specified.
 		// create a compound less function.
-		less = func(a, b btree.Item) bool {
+		less = func(a string, b DBItem) bool {
 			for i := 0; i < len(lessers)-1; i++ {
 				if lessers[i](a, b) {
 					return true
