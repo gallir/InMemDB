@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -87,61 +86,6 @@ func TestBackgroudOperations(t *testing.T) {
 	}
 	if n != 200 {
 		t.Fatalf("expecting '%v', got '%v'", 200, n)
-	}
-}
-func TestSaveLoad(t *testing.T) {
-	db, _ := Open(":memory:")
-	defer db.Close()
-	if err := db.Update(func(tx *Tx) error {
-		for i := 0; i < 20; i++ {
-			_, _, err := tx.Set(fmt.Sprintf("key:%d", i), fmt.Sprintf("planet:%d", i), nil)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Create("temp.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		f.Close()
-		os.RemoveAll("temp.db")
-	}()
-	if err := db.Save(f); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	db, _ = Open(":memory:")
-	defer db.Close()
-	f, err = os.Open("temp.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if err := db.Load(f); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.View(func(tx *Tx) error {
-		for i := 0; i < 20; i++ {
-			ex := fmt.Sprintf("planet:%d", i)
-			val, err := tx.Get(fmt.Sprintf("key:%d", i))
-			if err != nil {
-				return err
-			}
-			if ex != val {
-				t.Fatalf("expected %s, got %s", ex, val)
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -670,24 +614,7 @@ func TestVariousTx(t *testing.T) {
 		t.Fatal("expecting tx closed error")
 	}
 	db.mu.RUnlock()
-	// flush to unwritable file
-	if err := db.Update(func(tx *Tx) error {
-		_, _, err := tx.Set("var1", "val1", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return tx.db.file.Close()
-	}); err == nil {
-		t.Fatal("should not be able to commit when the file is closed")
-	}
-	db.file, err = os.OpenFile("data.db", os.O_CREATE|os.O_RDWR, 0666)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.file.Seek(0, 2); err != nil {
-		t.Fatal(err)
-	}
-	db.buf = nil
+
 	if err := db.CreateIndex("blank", "*", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1148,114 +1075,6 @@ func TestNoExpiringItem(t *testing.T) {
 		t.Fatal("item min,max should both be nil")
 	}
 }
-func TestAutoShrink(t *testing.T) {
-	db := testOpen(t)
-	defer testClose(db)
-	for i := 0; i < 1000; i++ {
-		err := db.Update(func(tx *Tx) error {
-			for i := 0; i < 20; i++ {
-				if _, _, err := tx.Set(fmt.Sprintf("HELLO:%d", i), "WORLD", nil); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	db = testReOpen(t, db)
-	defer testClose(db)
-	db.config.AutoShrinkMinSize = 64 * 1024 // 64K
-	for i := 0; i < 2000; i++ {
-		err := db.Update(func(tx *Tx) error {
-			for i := 0; i < 20; i++ {
-				if _, _, err := tx.Set(fmt.Sprintf("HELLO:%d", i), "WORLD", nil); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	time.Sleep(time.Second * 3)
-	db = testReOpen(t, db)
-	defer testClose(db)
-	err := db.View(func(tx *Tx) error {
-		n, err := tx.Len()
-		if err != nil {
-			return err
-		}
-		if n != 20 {
-			t.Fatalf("expecting 20, got %v", n)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// test database format loading
-func TestDatabaseFormat(t *testing.T) {
-	// should succeed
-	func() {
-		resp := strings.Join([]string{
-			"*3\r\n$3\r\nset\r\n$4\r\nvar1\r\n$4\r\n1234\r\n",
-			"*3\r\n$3\r\nset\r\n$4\r\nvar2\r\n$4\r\n1234\r\n",
-			"*2\r\n$3\r\ndel\r\n$4\r\nvar1\r\n",
-			"*5\r\n$3\r\nset\r\n$3\r\nvar\r\n$3\r\nval\r\n$2\r\nex\r\n$2\r\n10\r\n",
-		}, "")
-		if err := os.RemoveAll("data.db"); err != nil {
-			t.Fatal(err)
-		}
-		if err := ioutil.WriteFile("data.db", []byte(resp), 0666); err != nil {
-			t.Fatal(err)
-		}
-		db := testOpen(t)
-		defer testClose(db)
-	}()
-	testBadFormat := func(resp string) {
-		if err := os.RemoveAll("data.db"); err != nil {
-			t.Fatal(err)
-		}
-		if err := ioutil.WriteFile("data.db", []byte(resp), 0666); err != nil {
-			t.Fatal(err)
-		}
-		db, err := Open("data.db")
-		if err == nil {
-			if err := db.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.RemoveAll("data.db"); err != nil {
-				t.Fatal(err)
-			}
-			t.Fatalf("invalid database should not be allowed")
-		}
-	}
-	testBadFormat("*3\r")
-	testBadFormat("*3\n")
-	testBadFormat("*a\r\n")
-	testBadFormat("*2\r\n")
-	testBadFormat("*2\r\n%3")
-	testBadFormat("*2\r\n$")
-	testBadFormat("*2\r\n$3\r\n")
-	testBadFormat("*2\r\n$3\r\ndel")
-	testBadFormat("*2\r\n$3\r\ndel\r\r")
-	testBadFormat("*0\r\n*2\r\n$3\r\ndel\r\r")
-	testBadFormat("*1\r\n$3\r\nnop\r\n")
-	testBadFormat("*1\r\n$3\r\ndel\r\n")
-	testBadFormat("*1\r\n$3\r\nset\r\n")
-	testBadFormat("*5\r\n$3\r\nset\r\n$3\r\nvar\r\n$3\r\nval\r\n$2\r\nxx\r\n$2\r\n10\r\n")
-	testBadFormat("*5\r\n$3\r\nset\r\n$3\r\nvar\r\n$3\r\nval\r\n$2\r\nex\r\n$2\r\naa\r\n")
-	testBadFormat("*15\r\n$3\r\nset\r\n$3\r\nvar\r\n$3\r\nval\r\n$2\r\nex\r\n$2\r\naa\r\n")
-	testBadFormat("*1A\r\n$3\r\nset\r\n$3\r\nvar\r\n$3\r\nval\r\n$2\r\nex\r\n$2\r\naa\r\n")
-	testBadFormat("*5\r\n$13\r\nset\r\n$3\r\nvar\r\n$3\r\nval\r\n$2\r\nex\r\n$2\r\naa\r\n")
-	testBadFormat("*5\r\n$1A\r\nset\r\n$3\r\nvar\r\n$3\r\nval\r\n$2\r\nex\r\n$2\r\naa\r\n")
-	testBadFormat("*5\r\n$3\r\nset\r\n$5000\r\nvar\r\n$3\r\nval\r\n$2\r\nex\r\n$2\r\naa\r\n")
-}
 
 func TestInsertsAndDeleted(t *testing.T) {
 	db := testOpen(t)
@@ -1402,120 +1221,6 @@ func TestOpeningClosedDatabase(t *testing.T) {
 	}
 	if err := db.Close(); err != ErrDatabaseClosed {
 		t.Fatal("should not be able to close a closed database")
-	}
-}
-
-// test shrinking a database.
-func TestShrink(t *testing.T) {
-	db := testOpen(t)
-	defer testClose(db)
-	if err := db.Shrink(); err != nil {
-		t.Fatal(err)
-	}
-	fi, err := os.Stat("data.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Size() != 0 {
-		t.Fatalf("expected %v, got %v", 0, fi.Size())
-	}
-	// add 10 items
-	err = db.Update(func(tx *Tx) error {
-		for i := 0; i < 10; i++ {
-			if _, _, err := tx.Set(fmt.Sprintf("key%d", i), fmt.Sprintf("val%d", i), nil); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// add the same 10 items
-	// this will create 10 duplicate log entries
-	err = db.Update(func(tx *Tx) error {
-		for i := 0; i < 10; i++ {
-			if _, _, err := tx.Set(fmt.Sprintf("key%d", i), fmt.Sprintf("val%d", i), nil); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fi, err = os.Stat("data.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sz1 := fi.Size()
-	if sz1 == 0 {
-		t.Fatalf("expected > 0, got %v", sz1)
-	}
-	if err := db.Shrink(); err != nil {
-		t.Fatal(err)
-	}
-	fi, err = os.Stat("data.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sz2 := fi.Size()
-	if sz2 >= sz1 {
-		t.Fatalf("expected < %v, got %v", sz1, sz2)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Shrink(); err != ErrDatabaseClosed {
-		t.Fatal("shrink on a closed databse should not be allowed")
-	}
-	// Now we will open a db that does not persist
-	db, err = Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	// add 10 items
-	err = db.Update(func(tx *Tx) error {
-		for i := 0; i < 10; i++ {
-			if _, _, err := tx.Set(fmt.Sprintf("key%d", i), fmt.Sprintf("val%d", i), nil); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// add the same 10 items
-	// this will create 10 duplicate log entries
-	err = db.Update(func(tx *Tx) error {
-		for i := 0; i < 10; i++ {
-			if _, _, err := tx.Set(fmt.Sprintf("key%d", i), fmt.Sprintf("val%d", i), nil); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = db.View(func(tx *Tx) error {
-		n, err := tx.Len()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n != 10 {
-			t.Fatalf("expecting %v, got %v", 10, n)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// this should succeed even though it's basically a noop.
-	if err := db.Shrink(); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -1985,33 +1690,9 @@ func TestConfig(t *testing.T) {
 	db := testOpen(t)
 	defer testClose(db)
 
-	err := db.SetConfig(Config{SyncPolicy: SyncPolicy(-1)})
-	if err == nil {
-		t.Fatal("expecting a config syncpolicy error")
-	}
-	err = db.SetConfig(Config{SyncPolicy: SyncPolicy(3)})
-	if err == nil {
-		t.Fatal("expecting a config syncpolicy error")
-	}
-	err = db.SetConfig(Config{SyncPolicy: Never})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = db.SetConfig(Config{SyncPolicy: EverySecond})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = db.SetConfig(Config{AutoShrinkMinSize: 100, AutoShrinkPercentage: 200, SyncPolicy: Always})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var c Config
 	if err := db.ReadConfig(&c); err != nil {
 		t.Fatal(err)
-	}
-	if c.AutoShrinkMinSize != 100 || c.AutoShrinkPercentage != 200 && c.SyncPolicy != Always {
-		t.Fatalf("expecting %v, %v, and %v, got %v, %v, and %v", 100, 200, Always, c.AutoShrinkMinSize, c.AutoShrinkPercentage, c.SyncPolicy)
 	}
 }
 func testUint64Hex(n uint64) string {
@@ -2257,14 +1938,6 @@ func Benchmark_Spatial_2D(t *testing.B) {
 
 }
 */
-func TestCoverCloseAlreadyClosed(t *testing.T) {
-	db := testOpen(t)
-	defer testClose(db)
-	_ = db.file.Close()
-	if err := db.Close(); err == nil {
-		t.Fatal("expecting an error")
-	}
-}
 
 func TestCoverConfigClosed(t *testing.T) {
 	db := testOpen(t)
@@ -2276,63 +1949,6 @@ func TestCoverConfigClosed(t *testing.T) {
 	}
 	if err := db.SetConfig(config); err != ErrDatabaseClosed {
 		t.Fatal("expecting database closed error")
-	}
-}
-func TestCoverShrinkShrink(t *testing.T) {
-	db := testOpen(t)
-	defer testClose(db)
-	if err := db.Update(func(tx *Tx) error {
-		for i := 0; i < 10000; i++ {
-			_, _, err := tx.Set(fmt.Sprintf("%d", i), fmt.Sprintf("%d", i), nil)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Update(func(tx *Tx) error {
-		for i := 250; i < 250+100; i++ {
-			_, err := tx.Delete(fmt.Sprintf("%d", i))
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var err1, err2 error
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		err1 = db.Shrink()
-	}()
-	go func() {
-		defer wg.Done()
-		err2 = db.Shrink()
-	}()
-	wg.Wait()
-	//println(123)
-	//fmt.Printf("%v\n%v\n", err1, err2)
-	if err1 != ErrShrinkInProcess && err2 != ErrShrinkInProcess {
-		t.Fatal("expecting a shrink in process error")
-	}
-	db = testReOpen(t, db)
-	defer testClose(db)
-	if err := db.View(func(tx *Tx) error {
-		n, err := tx.Len()
-		if err != nil {
-			return err
-		}
-		if n != 9900 {
-			t.Fatal("expecting 9900 items")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
 	}
 }
 
