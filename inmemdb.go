@@ -16,8 +16,8 @@ import (
 )
 
 type DBItem interface {
-	Less(than DBItem) bool
-	Key() string
+	// Less(than DBItem) bool
+	// Key() string
 }
 
 var (
@@ -58,6 +58,7 @@ type DB struct {
 	exmgr  bool              // indicates that expires manager is running.
 	closed bool              // set when the database has been closed
 	config Config            // the database configuration
+	Name   string            // A given name, not used internally
 }
 
 // Config represents database configuration options. These
@@ -78,8 +79,10 @@ const btreeDegrees = 64
 
 // Open opens a database at the provided path.
 // If the file does not exist then it will be created automatically.
-func Open(path string) (*DB, error) {
-	db := &DB{}
+func Open(name string) (*DB, error) {
+	db := &DB{
+		Name: name,
+	}
 	// initialize trees and indexes
 	db.keys = btree.New(btreeDegrees, nil)
 	db.exps = btree.New(btreeDegrees, &exctx{db})
@@ -110,32 +113,13 @@ func (db *DB) Close() error {
 // index represents a b-tree or r-tree index and also acts as the
 // b-tree/r-tree context for itself.
 type index struct {
-	btr    *btree.BTree // contains the items
-	name   string       // name of the index
-	fields []string     // Name of the fields to extract
-	// pattern string                                  // a required key pattern
-	less func(a, b DBItem, fields []string) bool // less comparison function
-	db   *DB                                     // the origin database
-	opts IndexOptions                            // index options
+	btr    *btree.BTree                            // contains the items
+	name   string                                  // name of the index
+	fields []string                                // Names of the fields to extract
+	less   func(a, b DBItem, fields []string) bool // less comparison function
+	db     *DB                                     // the origin database
+	opts   IndexOptions                            // index options
 }
-
-/*
-// match matches the pattern to the key
-func (idx *index) match(key string) bool {
-	if idx.pattern == "*" {
-		return true
-	}
-	if idx.opts.CaseInsensitiveKeyMatching {
-		for i := 0; i < len(key); i++ {
-			if key[i] >= 'A' && key[i] <= 'Z' {
-				key = strings.ToLower(key)
-				break
-			}
-		}
-	}
-	return match.Match(key, idx.pattern)
-}
-*/
 
 // clearCopy creates a copy of the index, but with an empty dataset.
 func (idx *index) clearCopy() *index {
@@ -143,10 +127,9 @@ func (idx *index) clearCopy() *index {
 	nidx := &index{
 		name:   idx.name,
 		fields: idx.fields,
-		//pattern: idx.pattern,
-		db:   idx.db,
-		less: idx.less,
-		opts: idx.opts,
+		db:     idx.db,
+		less:   idx.less,
+		opts:   idx.opts,
 	}
 	// initialize with empty trees
 	if nidx.less != nil {
@@ -170,19 +153,6 @@ func (idx *index) rebuild() {
 		}
 		return true
 	})
-}
-
-// Indexes returns a list of index names.
-//
-// Deprecated: Use Transactions
-func (db *DB) Indexes() ([]string, error) {
-	var names []string
-	var err = db.View(func(tx *Tx) error {
-		var err error
-		names, err = tx.Indexes()
-		return err
-	})
-	return names, err
 }
 
 // ReadConfig returns the database configuration.
@@ -647,7 +617,7 @@ func (tx *Tx) GetLess(index string) (func(a, b DBItem, fields []string) bool, er
 //
 // Only a writable transaction can be used with this operation.
 // This operation is not allowed during iterations such as Ascend* & Descend*.
-func (tx *Tx) Set(value DBItem, opts *SetOptions) (previousValue DBItem,
+func (tx *Tx) Set(key string, value DBItem, opts *SetOptions) (previousValue DBItem,
 	replaced bool, err error) {
 	if tx.db == nil {
 		return nil, false, ErrTxClosed
@@ -656,7 +626,7 @@ func (tx *Tx) Set(value DBItem, opts *SetOptions) (previousValue DBItem,
 	} else if tx.wc.itercount > 0 {
 		return nil, false, ErrTxIterating
 	}
-	item := &dbItem{element: value, key: value.Key()}
+	item := &dbItem{element: value, key: key}
 	if opts != nil {
 		if opts.Expires {
 			// The caller is requesting that this item expires. Convert the
@@ -1162,7 +1132,7 @@ func IndexInt(ia, ib DBItem, fields []string) bool {
 	return a < b
 }
 
-// IndexUint is a helper function that returns true if 'a' is less than 'b'.
+// IndexUint64 is a helper function that returns true if 'a' is less than 'b'.
 // This compares uint64s that are added to the database using the
 // Uint() conversion function.
 func IndexUint64(ia, ib DBItem, fields []string) bool {
@@ -1182,7 +1152,7 @@ func IndexUint64(ia, ib DBItem, fields []string) bool {
 	return a < b
 }
 
-// IndexFloat is a helper function that returns true if 'a' is less than 'b'.
+// IndexFloat64 is a helper function that returns true if 'a' is less than 'b'.
 // This compares float64s that are added to the database using the
 // Float() conversion function.
 func IndexFloat64(ia, ib DBItem, fields []string) bool {

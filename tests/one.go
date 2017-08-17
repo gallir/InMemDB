@@ -59,7 +59,7 @@ func create_index(tx *inmemdb.Tx) error {
 }
 
 func create_elements(tx *inmemdb.Tx) error {
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1000000; i++ {
 		t := &Thing{
 			Txt: fmt.Sprintf("Thing %d", i),
 			Val: rand.Uint64() % 10000, // uint64(i),
