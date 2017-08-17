@@ -6,7 +6,6 @@ package inmemdb
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 	"sort"
 	"sync"
@@ -14,11 +13,6 @@ import (
 
 	"github.com/tidwall/btree"
 )
-
-type DBItem interface {
-	// Less(than DBItem) bool
-	// Key() string
-}
 
 var (
 	// ErrTxNotWritable is returned when performing a write operation on a
@@ -66,7 +60,7 @@ type DB struct {
 type Config struct {
 	// OnExpired is used to custom handle the deletion option when a key
 	// has been expired.
-	OnExpired func(keys []DBItem)
+	OnExpired func(keys []interface{})
 }
 
 // exctx is a simple b-tree context for ordering by expiration.
@@ -113,12 +107,12 @@ func (db *DB) Close() error {
 // index represents a b-tree or r-tree index and also acts as the
 // b-tree/r-tree context for itself.
 type index struct {
-	btr    *btree.BTree                            // contains the items
-	name   string                                  // name of the index
-	fields []string                                // Names of the fields to extract
-	less   func(a, b DBItem, fields []string) bool // less comparison function
-	db     *DB                                     // the origin database
-	opts   IndexOptions                            // index options
+	btr    *btree.BTree                                 // contains the items
+	name   string                                       // name of the index
+	fields []string                                     // Names of the fields to extract
+	less   func(a, b interface{}, fields []string) bool // less comparison function
+	db     *DB                                          // the origin database
+	opts   IndexOptions                                 // index options
 }
 
 // clearCopy creates a copy of the index, but with an empty dataset.
@@ -247,8 +241,8 @@ func (db *DB) backgroundManager() {
 	for range t.C {
 		// Open a standard view. This will take a full lock of the
 		// database thus allowing for access to anything we need.
-		var onExpired func([]DBItem)
-		var expired []DBItem
+		var onExpired func([]interface{})
+		var expired []interface{}
 		err := db.Update(func(tx *Tx) error {
 			onExpired = db.config.OnExpired
 			// produce a list of expired items that need removing
@@ -363,10 +357,10 @@ type txWriteContext struct {
 	rbexps *btree.BTree      // a tree of items ordered by expiration
 	rbidxs map[string]*index // the index trees.
 
-	rollbackItems   map[DBItem]*dbItem // details for rolling back tx.
-	commitItems     map[DBItem]*dbItem // details for committing tx.
-	itercount       int                // stack of iterators
-	rollbackIndexes map[string]*index  // details for dropped indexes.
+	rollbackItems   map[interface{}]*dbItem // details for rolling back tx.
+	commitItems     map[interface{}]*dbItem // details for committing tx.
+	itercount       int                     // stack of iterators
+	rollbackIndexes map[string]*index       // details for dropped indexes.
 }
 
 // DeleteAll deletes all items from the database.
@@ -398,7 +392,7 @@ func (tx *Tx) DeleteAll() error {
 	}
 
 	// always clear out the commits
-	tx.wc.commitItems = make(map[DBItem]*dbItem)
+	tx.wc.commitItems = make(map[interface{}]*dbItem)
 
 	return nil
 }
@@ -424,7 +418,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 		// writable transactions have a writeContext object that
 		// contains information about changes to the database.
 		tx.wc = &txWriteContext{}
-		tx.wc.rollbackItems = make(map[DBItem]*dbItem)
+		tx.wc.rollbackItems = make(map[interface{}]*dbItem)
 		tx.wc.rollbackIndexes = make(map[string]*index)
 	}
 	return tx, nil
@@ -526,7 +520,7 @@ type dbItemOpts struct {
 }
 type dbItem struct {
 	key     string // the binary key
-	element DBItem
+	element interface{}
 	opts    *dbItemOpts // optional meta information
 }
 
@@ -595,7 +589,7 @@ type SetOptions struct {
 // doing ad-hoc compares inside a transaction.
 // Returns ErrNotFound if the index is not found or there is no less
 // function bound to the index
-func (tx *Tx) GetLess(index string) (func(a, b DBItem, fields []string) bool, error) {
+func (tx *Tx) GetLess(index string) (func(a, b interface{}, fields []string) bool, error) {
 	if tx.db == nil {
 		return nil, ErrTxClosed
 	}
@@ -617,7 +611,7 @@ func (tx *Tx) GetLess(index string) (func(a, b DBItem, fields []string) bool, er
 //
 // Only a writable transaction can be used with this operation.
 // This operation is not allowed during iterations such as Ascend* & Descend*.
-func (tx *Tx) Set(key string, value DBItem, opts *SetOptions) (previousValue DBItem,
+func (tx *Tx) Set(key string, value interface{}, opts *SetOptions) (previousValue interface{},
 	replaced bool, err error) {
 	if tx.db == nil {
 		return nil, false, ErrTxClosed
@@ -663,7 +657,7 @@ func (tx *Tx) Set(key string, value DBItem, opts *SetOptions) (previousValue DBI
 
 // Get returns a value for a key. If the item does not exist or if the item
 // has expired then ErrNotFound is returned.
-func (tx *Tx) Get(key string) (val DBItem, err error) {
+func (tx *Tx) Get(key string) (val interface{}, err error) {
 	if tx.db == nil {
 		return nil, ErrTxClosed
 	}
@@ -681,7 +675,7 @@ func (tx *Tx) Get(key string) (val DBItem, err error) {
 //
 // Only a writable transaction can be used for this operation.
 // This operation is not allowed during iterations such as Ascend* & Descend*.
-func (tx *Tx) Delete(key DBItem) (val DBItem, err error) {
+func (tx *Tx) Delete(key interface{}) (val interface{}, err error) {
 	if tx.db == nil {
 		return nil, ErrTxClosed
 	} else if !tx.writable {
@@ -739,8 +733,8 @@ func (tx *Tx) TTL(key string) (time.Duration, error) {
 // The start and stop params are the greaterThan, lessThan limits. For
 // descending order, these will be lessThan, greaterThan.
 // An error will be returned if the tx is closed or the index is not found.
-func (tx *Tx) scan(desc, gt, lt bool, index string, start, stop DBItem,
-	iterator func(value DBItem) bool) error {
+func (tx *Tx) scan(desc, gt, lt bool, index string, start, stop interface{},
+	iterator func(value interface{}) bool) error {
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -755,7 +749,6 @@ func (tx *Tx) scan(desc, gt, lt bool, index string, start, stop DBItem,
 		tr = tx.db.keys
 	} else {
 		idx := tx.db.idxs[index]
-		fmt.Println("idx", idx)
 		if idx == nil {
 			// index was not found. return error
 			return ErrNotFound
@@ -801,7 +794,6 @@ func (tx *Tx) scan(desc, gt, lt bool, index string, start, stop DBItem,
 			tr.AscendLessThan(itemA, iter)
 		} else {
 			tr.Ascend(iter)
-			fmt.Println("asc")
 		}
 	}
 	return nil
@@ -814,7 +806,7 @@ func (tx *Tx) scan(desc, gt, lt bool, index string, start, stop DBItem,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) Ascend(index string,
-	iterator func(value DBItem) bool) error {
+	iterator func(value interface{}) bool) error {
 	return tx.scan(false, false, false, index, nil, nil, iterator)
 }
 
@@ -824,8 +816,8 @@ func (tx *Tx) Ascend(index string,
 // as specified by the less() function of the defined index.
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
-func (tx *Tx) AscendGreaterOrEqual(index string, pivot DBItem,
-	iterator func(value DBItem) bool) error {
+func (tx *Tx) AscendGreaterOrEqual(index string, pivot interface{},
+	iterator func(value interface{}) bool) error {
 	return tx.scan(false, true, false, index, pivot, nil, iterator)
 }
 
@@ -835,8 +827,8 @@ func (tx *Tx) AscendGreaterOrEqual(index string, pivot DBItem,
 // as specified by the less() function of the defined index.
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
-func (tx *Tx) AscendLessThan(index string, pivot DBItem,
-	iterator func(value DBItem) bool) error {
+func (tx *Tx) AscendLessThan(index string, pivot interface{},
+	iterator func(value interface{}) bool) error {
 	return tx.scan(false, false, true, index, pivot, nil, iterator)
 }
 
@@ -846,8 +838,8 @@ func (tx *Tx) AscendLessThan(index string, pivot DBItem,
 // as specified by the less() function of the defined index.
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
-func (tx *Tx) AscendRange(index string, greaterOrEqual, lessThan DBItem,
-	iterator func(value DBItem) bool) error {
+func (tx *Tx) AscendRange(index string, greaterOrEqual, lessThan interface{},
+	iterator func(value interface{}) bool) error {
 	return tx.scan(
 		false, true, true, index, greaterOrEqual, lessThan, iterator,
 	)
@@ -860,7 +852,7 @@ func (tx *Tx) AscendRange(index string, greaterOrEqual, lessThan DBItem,
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
 func (tx *Tx) Descend(index string,
-	iterator func(value DBItem) bool) error {
+	iterator func(value interface{}) bool) error {
 	return tx.scan(true, false, false, index, nil, nil, iterator)
 }
 
@@ -870,8 +862,8 @@ func (tx *Tx) Descend(index string,
 // as specified by the less() function of the defined index.
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
-func (tx *Tx) DescendGreaterThan(index string, pivot DBItem,
-	iterator func(value DBItem) bool) error {
+func (tx *Tx) DescendGreaterThan(index string, pivot interface{},
+	iterator func(value interface{}) bool) error {
 	return tx.scan(true, true, false, index, pivot, nil, iterator)
 }
 
@@ -881,8 +873,8 @@ func (tx *Tx) DescendGreaterThan(index string, pivot DBItem,
 // as specified by the less() function of the defined index.
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
-func (tx *Tx) DescendLessOrEqual(index string, pivot DBItem,
-	iterator func(value DBItem) bool) error {
+func (tx *Tx) DescendLessOrEqual(index string, pivot interface{},
+	iterator func(value interface{}) bool) error {
 	return tx.scan(true, false, true, index, pivot, nil, iterator)
 }
 
@@ -892,8 +884,8 @@ func (tx *Tx) DescendLessOrEqual(index string, pivot DBItem,
 // as specified by the less() function of the defined index.
 // When an index is not provided, the results will be ordered by the item key.
 // An invalid index will return an error.
-func (tx *Tx) DescendRange(index string, lessOrEqual, greaterThan DBItem,
-	iterator func(value DBItem) bool) error {
+func (tx *Tx) DescendRange(index string, lessOrEqual, greaterThan interface{},
+	iterator func(value interface{}) bool) error {
 	return tx.scan(
 		true, true, true, index, lessOrEqual, greaterThan, iterator,
 	)
@@ -931,7 +923,7 @@ type IndexOptions struct {
 // There are some default less function that can be used such as
 // IndexString, IndexBinary, etc.
 func (tx *Tx) CreateIndex(name string, fields []string,
-	lessers ...func(a, b DBItem, fields []string) bool) error {
+	lessers ...func(a, b interface{}, fields []string) bool) error {
 	return tx.createIndex(name, fields, lessers, nil)
 }
 
@@ -939,13 +931,13 @@ func (tx *Tx) CreateIndex(name string, fields []string,
 // for additional options.
 func (tx *Tx) CreateIndexOptions(name string, fields []string,
 	opts *IndexOptions,
-	lessers []func(a, b DBItem, fields []string) bool) error {
+	lessers []func(a, b interface{}, fields []string) bool) error {
 	return tx.createIndex(name, fields, lessers, opts)
 }
 
 // createIndex is called by CreateIndex() and CreateSpatialIndex()
 func (tx *Tx) createIndex(name string, fields []string,
-	lessers []func(a, b DBItem, fields []string) bool,
+	lessers []func(a, b interface{}, fields []string) bool,
 	opts *IndexOptions) error {
 	if tx.db == nil {
 		return ErrTxClosed
@@ -970,15 +962,14 @@ func (tx *Tx) createIndex(name string, fields []string,
 	}
 
 	// genreate a less function
-	var less func(a, b DBItem, fields []string) bool
+	var less func(a, b interface{}, fields []string) bool
 	switch len(lessers) {
 	default:
 		// multiple less functions specified.
 		// create a compound less function.
-		var n []string
-		less = func(a, b DBItem, fields []string) bool {
+		less = func(a, b interface{}, fields []string) bool {
 			for i := 0; i < len(lessers)-1; i++ {
-				n := []string{fields[i]}
+				n := fields[i : i+1]
 				if lessers[i](a, b, n) {
 					return true
 				}
@@ -986,7 +977,8 @@ func (tx *Tx) createIndex(name string, fields []string,
 					return false
 				}
 			}
-			return lessers[len(lessers)-1](a, b, n)
+			last := len(lessers) - 1
+			return lessers[last](a, b, fields[last:])
 		}
 	case 0:
 		// no less function
@@ -1065,7 +1057,7 @@ func (tx *Tx) Indexes() ([]string, error) {
 // IndexString is a helper function that return true if 'a' is less than 'b'.
 // This is a case-insensitive comparison. Use the IndexBinary() for comparing
 // case-sensitive strings.
-func IndexString(ia, ib DBItem, fields []string) bool {
+func IndexString(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
 	va, ok := fieldByName(ia, field, reflect.String)
 	if !ok {
@@ -1116,7 +1108,7 @@ func IndexString(ia, ib DBItem, fields []string) bool {
 }
 
 // IndexInt is a helper function that returns true if 'a' is less than 'b'.
-func IndexInt(ia, ib DBItem, fields []string) bool {
+func IndexInt(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
 	va, ok := fieldByName(ia, field, reflect.Int)
 	if !ok {
@@ -1135,16 +1127,14 @@ func IndexInt(ia, ib DBItem, fields []string) bool {
 // IndexUint64 is a helper function that returns true if 'a' is less than 'b'.
 // This compares uint64s that are added to the database using the
 // Uint() conversion function.
-func IndexUint64(ia, ib DBItem, fields []string) bool {
+func IndexUint64(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
 	va, ok := fieldByName(ia, field, reflect.Uint64)
 	if !ok {
-		fmt.Println("ia not ok")
 		return false
 	}
 	vb, ok := fieldByName(ib, field, reflect.Uint64)
 	if !ok {
-		fmt.Println("ib not ok")
 		return false
 	}
 	a := va.(uint64)
@@ -1155,7 +1145,7 @@ func IndexUint64(ia, ib DBItem, fields []string) bool {
 // IndexFloat64 is a helper function that returns true if 'a' is less than 'b'.
 // This compares float64s that are added to the database using the
 // Float() conversion function.
-func IndexFloat64(ia, ib DBItem, fields []string) bool {
+func IndexFloat64(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
 	va, ok := fieldByName(ia, field, reflect.Float64)
 	if !ok {
@@ -1172,11 +1162,11 @@ func IndexFloat64(ia, ib DBItem, fields []string) bool {
 }
 
 // Desc is a helper function that changes the order of an index.
-func Desc(less func(a, b DBItem, fields []string) bool) func(a, b DBItem, fields []string) bool {
-	return func(a, b DBItem, fields []string) bool { return less(b, a, fields) }
+func Desc(less func(a, b interface{}, fields []string) bool) func(a, b interface{}, fields []string) bool {
+	return func(a, b interface{}, fields []string) bool { return less(b, a, fields) }
 }
 
-func fieldByName(obj DBItem, n string, kind reflect.Kind) (interface{}, bool) {
+func fieldByName(obj interface{}, n string, kind reflect.Kind) (interface{}, bool) {
 	v := reflect.ValueOf(obj)
 	v = reflect.Indirect(v) // Dereference the pointer if any
 
