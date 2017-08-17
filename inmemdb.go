@@ -60,7 +60,7 @@ type DB struct {
 type Config struct {
 	// OnExpired is used to custom handle the deletion option when a key
 	// has been expired.
-	OnExpired func(keys []interface{})
+	OnExpired func(keys []string)
 }
 
 // exctx is a simple b-tree context for ordering by expiration.
@@ -239,20 +239,25 @@ func (db *DB) backgroundManager() {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for range t.C {
-		// Open a standard view. This will take a full lock of the
-		// database thus allowing for access to anything we need.
-		var onExpired func([]interface{})
-		var expired []interface{}
-		err := db.Update(func(tx *Tx) error {
-			onExpired = db.config.OnExpired
+		// Open a View only to collect expired items
+		onExpired := db.config.OnExpired
+		var expired []string
+		err := db.View(func(tx *Tx) error {
 			// produce a list of expired items that need removing
 			db.exps.AscendLessThan(&dbItem{
 				opts: &dbItemOpts{ex: true, exat: time.Now()},
 			}, func(item btree.Item) bool {
-				expired = append(expired, item.(*dbItem).element)
+				expired = append(expired, item.(*dbItem).key)
 				return true
 			})
-			if onExpired == nil {
+			return nil
+		})
+		if err == ErrDatabaseClosed {
+			break
+		}
+
+		if onExpired == nil && len(expired) > 0 {
+			err = db.Update(func(tx *Tx) error {
 				for _, key := range expired {
 					if _, err := tx.Delete(key); err != nil {
 						// it's ok to get a "not found" because the
@@ -263,9 +268,9 @@ func (db *DB) backgroundManager() {
 						}
 					}
 				}
-			}
-			return nil
-		})
+				return nil
+			})
+		}
 		if err == ErrDatabaseClosed {
 			break
 		}
@@ -471,7 +476,6 @@ func (tx *Tx) rollbackInner() {
 	}
 }
 
-// Commit writes all changes to disk.
 // An error is returned when a write error occurs, or when a Commit() is called
 // from a read-only transaction.
 func (tx *Tx) Commit() error {
@@ -675,7 +679,7 @@ func (tx *Tx) Get(key string) (val interface{}, err error) {
 //
 // Only a writable transaction can be used for this operation.
 // This operation is not allowed during iterations such as Ascend* & Descend*.
-func (tx *Tx) Delete(key interface{}) (val interface{}, err error) {
+func (tx *Tx) Delete(key string) (val interface{}, err error) {
 	if tx.db == nil {
 		return nil, ErrTxClosed
 	} else if !tx.writable {
@@ -683,7 +687,7 @@ func (tx *Tx) Delete(key interface{}) (val interface{}, err error) {
 	} else if tx.wc.itercount > 0 {
 		return nil, ErrTxIterating
 	}
-	item := tx.db.deleteFromDatabase(&dbItem{element: key})
+	item := tx.db.deleteFromDatabase(&dbItem{key: key})
 	if item == nil {
 		return nil, ErrNotFound
 	}
@@ -1057,7 +1061,7 @@ func (tx *Tx) Indexes() ([]string, error) {
 // IndexString is a helper function that return true if 'a' is less than 'b'.
 // This is a case-insensitive comparison. Use the IndexBinary() for comparing
 // case-sensitive strings.
-func IndexString(ia, ib interface{}, fields []string) bool {
+func IndexIString(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
 	va, ok := fieldByName(ia, field, reflect.String)
 	if !ok {
@@ -1108,13 +1112,28 @@ func IndexString(ia, ib interface{}, fields []string) bool {
 }
 
 // IndexInt is a helper function that returns true if 'a' is less than 'b'.
-func IndexInt(ia, ib interface{}, fields []string) bool {
+func IndexString(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
-	va, ok := fieldByName(ia, field, reflect.Int)
+	va, ok := fieldByName(ia, field, 0)
 	if !ok {
 		return false
 	}
-	vb, ok := fieldByName(ib, field, reflect.Int)
+	vb, ok := fieldByName(ib, field, 0)
+	if !ok {
+		return false
+	}
+
+	return va.(string) < vb.(string)
+}
+
+// IndexInt is a helper function that returns true if 'a' is less than 'b'.
+func IndexInt(ia, ib interface{}, fields []string) bool {
+	field := fields[0]
+	va, ok := fieldByName(ia, field, 0)
+	if !ok {
+		return false
+	}
+	vb, ok := fieldByName(ib, field, 0)
 	if !ok {
 		return false
 	}
@@ -1129,11 +1148,11 @@ func IndexInt(ia, ib interface{}, fields []string) bool {
 // Uint() conversion function.
 func IndexUint64(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
-	va, ok := fieldByName(ia, field, reflect.Uint64)
+	va, ok := fieldByName(ia, field, 0)
 	if !ok {
 		return false
 	}
-	vb, ok := fieldByName(ib, field, reflect.Uint64)
+	vb, ok := fieldByName(ib, field, 0)
 	if !ok {
 		return false
 	}
@@ -1147,11 +1166,11 @@ func IndexUint64(ia, ib interface{}, fields []string) bool {
 // Float() conversion function.
 func IndexFloat64(ia, ib interface{}, fields []string) bool {
 	field := fields[0]
-	va, ok := fieldByName(ia, field, reflect.Float64)
+	va, ok := fieldByName(ia, field, 0)
 	if !ok {
 		return false
 	}
-	vb, ok := fieldByName(ib, field, reflect.Float64)
+	vb, ok := fieldByName(ib, field, 0)
 	if !ok {
 		return false
 	}
