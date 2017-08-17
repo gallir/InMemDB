@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/gallir/buntdb"
+	"github.com/gallir/InMemDB"
 )
 
 type Thing struct {
@@ -15,7 +15,7 @@ type Thing struct {
 	Age uint64
 }
 
-func (t Thing) Less(u buntdb.DBItem) bool {
+func (t Thing) Less(u inmemdb.DBItem) bool {
 	return t.Val < u.(*Thing).Val
 }
 
@@ -26,7 +26,7 @@ func (t Thing) Key() string {
 func main() {
 	// Open the data.db file. It will be created if it doesn't exist.
 	start := time.Now()
-	db, err := buntdb.Open("data.db")
+	db, err := inmemdb.Open("data.db")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -34,9 +34,9 @@ func main() {
 	db.Update(create_index)
 	db.Update(create_elements)
 
-	db.View(func(tx *buntdb.Tx) error {
+	db.View(func(tx *inmemdb.Tx) error {
 		/*
-			tx.Descend("ages", func(value buntdb.DBItem) bool {
+			tx.Descend("ages", func(value inmemdb.DBItem) bool {
 				t := value.(*Thing)
 				fmt.Printf("Name: %s Age: %d Val: %d\n", t.Txt, t.Age, t.Val)
 				return true
@@ -52,13 +52,13 @@ func main() {
 	fmt.Println("Elapsed", time.Since(start))
 }
 
-func create_index(tx *buntdb.Tx) error {
+func create_index(tx *inmemdb.Tx) error {
 	log.Println("hola")
-	tx.CreateIndex("vals", []string{"Val"}, buntdb.IndexUint64)
-	return tx.CreateIndex("ages", []string{"Age"}, buntdb.IndexUint64)
+	tx.CreateIndex("vals", []string{"Val"}, inmemdb.IndexUint64)
+	return tx.CreateIndex("ages", []string{"Age"}, inmemdb.IndexUint64)
 }
 
-func create_elements(tx *buntdb.Tx) error {
+func create_elements(tx *inmemdb.Tx) error {
 	for i := 0; i < 100; i++ {
 		t := &Thing{
 			Txt: fmt.Sprintf("Thing %d", i),

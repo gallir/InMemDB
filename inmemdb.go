@@ -2,7 +2,7 @@
 // It persists to disk, is ACID compliant, and uses locking for multiple
 // readers and a single writer. Bunt is ideal for projects that need
 // a dependable database, and favor speed over data size.
-package buntdb
+package inmemdb
 
 import (
 	"errors"

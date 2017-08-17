@@ -1,4 +1,4 @@
-package buntdb
+package inmemdb
 
 /*
 import (
