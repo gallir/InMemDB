@@ -256,7 +256,8 @@ func (db *DB) backgroundManager() {
 			break
 		}
 
-		if onExpired == nil && len(expired) > 0 {
+		// Delete items always
+		if len(expired) > 0 {
 			err = db.Update(func(tx *Tx) error {
 				for _, key := range expired {
 					if _, err := tx.Delete(key); err != nil {
