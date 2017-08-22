@@ -208,6 +208,18 @@ func (db *DB) insertIntoDatabase(item *dbItem) *dbItem {
 	return pdbi
 }
 
+func (db *DB) touchItem(item *dbItem) bool {
+	if item.opts != nil && item.opts.ex {
+		// The new item has eviction options. Update the
+		// expires tree
+		prev := db.exps.ReplaceOrInsert(item)
+		if prev != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // deleteFromDatabase removes and item from the database and indexes. The input
 // item must only have the key field specified thus "&dbItem{key: key}" is all
 // that is needed to fully remove the item with the matching key. If an item
@@ -258,6 +270,7 @@ func (db *DB) backgroundManager() {
 
 		// Delete items always
 		if len(expired) > 0 {
+
 			err = db.Update(func(tx *Tx) error {
 				for _, key := range expired {
 					if _, err := tx.Delete(key); err != nil {
@@ -272,14 +285,16 @@ func (db *DB) backgroundManager() {
 				return nil
 			})
 		}
-		if err == ErrDatabaseClosed {
-			break
-		}
 
 		// send expired event, if needed
 		if onExpired != nil && len(expired) > 0 {
 			onExpired(expired)
 		}
+
+		if err == ErrDatabaseClosed {
+			break
+		}
+
 	}
 }
 
@@ -658,6 +673,38 @@ func (tx *Tx) Set(key string, value interface{}, opts *SetOptions) (previousValu
 		}
 	}
 	return previousValue, replaced, nil
+}
+
+func (tx *Tx) Touch(key string, opts *SetOptions) (err error) {
+	if tx.db == nil {
+		return ErrTxClosed
+	} else if !tx.writable {
+		return ErrTxNotWritable
+	} else if tx.wc.itercount > 0 {
+		return ErrTxIterating
+	}
+
+	if opts == nil {
+		return ErrInvalidOperation
+	}
+
+	prev := tx.db.exps.Get(&dbItem{key: key})
+	//prev := tx.db.get(key)
+	if prev == nil {
+		return ErrTxNotWritable
+	}
+
+	item := &dbItem{
+		key:     key,
+		element: prev,
+	}
+	item.opts.ex = true
+	item.opts.exat = time.Now().Add(opts.TTL)
+
+	if tx.db.touchItem(item) {
+		return
+	}
+	return ErrInvalidOperation
 }
 
 // Get returns a value for a key. If the item does not exist or if the item
